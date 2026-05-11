@@ -178,7 +178,7 @@ export function Player() {
       setDownloadProgress(0);
       setErrorMsg(null);
       try {
-        const response = await fetch(sim.storageUrl);
+        const response = await fetch(`/api/download-simulation?url=${encodeURIComponent(sim.storageUrl)}`);
         if (!response.ok) {
           throw new Error("Failed to download simulation files.");
         }
