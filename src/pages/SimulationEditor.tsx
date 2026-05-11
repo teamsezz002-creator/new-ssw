@@ -268,12 +268,12 @@ export function SimulationEditor() {
     });
 
     const payload = await response.json();
-    if (!response.ok) {
-      throw new Error(payload?.error || 'Source ZIP build failed.');
+    if (Array.isArray(payload?.logs)) {
+      payload.logs.forEach((message: string) => addLog(message));
     }
 
-    if (Array.isArray(payload.logs)) {
-      payload.logs.forEach((message: string) => addLog(message));
+    if (!response.ok) {
+      throw new Error(payload?.error || 'Source ZIP build failed.');
     }
 
     if (!payload.zipBase64) {

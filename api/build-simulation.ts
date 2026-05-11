@@ -130,7 +130,7 @@ async function buildUploadedProject(zipBuffer: Buffer): Promise<BuildResult> {
     addLog(logs, `Project root found: ${buildDir}`);
 
     patchBuildFiles(buildDir, logs);
-    await runCommand('npm', ['install', '--legacy-peer-deps', '--no-audit', '--no-fund', '--loglevel=error'], buildDir, logs);
+    await runCommand('npm', ['install', '--include=dev', '--legacy-peer-deps', '--no-audit', '--no-fund', '--loglevel=error'], buildDir, logs);
     await runCommand('npm', ['run', 'build'], buildDir, logs);
 
     const distDir = fs.existsSync(path.join(buildDir, 'dist'))
