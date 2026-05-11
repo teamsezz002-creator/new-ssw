@@ -167,24 +167,39 @@ export function SimulationEditor() {
         throw new Error(`The uploaded ZIP file is too large (${(uploadFile.size / 1024 / 1024).toFixed(1)}MB). Please ensure you have removed the 'node_modules' folder and 'dist' folder before zipping your project. The maximum allowed size is 30MB.`);
       }
 
-      addLog(`Uploading source to Firebase Storage for Cloud Build...`);
       try {
-        // ૧. પહેલા Firestore રેકોર્ડ બનાવો (Building સ્ટેટસ સાથે)
-        await setDoc(doc(db, "simulations", finalId), {
-          ...formData,
-          id: finalId,
-          status: 'building',
-          timestamp: Date.now()
+        addLog(`Preparing Cloud Build environment...`);
+        
+        // ૧. Firestore માં એન્ટ્રી બનાવો
+        await setDoc(doc(db, "simulations", finalId), { ...formData, id: finalId, status: 'building', timestamp: Date.now() });
+
+        // ૨. ZIP અપલોડ પ્રોસેસ વિથ પ્રોગ્રેસ
+        const pendingRef = ref(storage, `pending-builds/${finalId}.zip`);
+        const uploadTask = uploadBytesResumable(pendingRef, uploadFile);
+
+        await new Promise((resolve, reject) => {
+          uploadTask.on('state_changed', 
+            (snapshot) => {
+              const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
+              if (progress % 20 === 0) addLog(`Uploading source: ${progress}%`);
+            },
+            (error) => reject(error),
+            () => resolve(true)
+          );
         });
 
-        // ૨. હવે ZIP અપલોડ કરો જે Cloud Function ને ટ્રિગર કરશે
-        const pendingRef = ref(storage, `pending-builds/${finalId}.zip`);
-        await uploadBytes(pendingRef, uploadFile);
-        addLog(`✓ Source uploaded. Waiting for Cloud Function to build...`);
+        addLog(`✓ Source uploaded. Notifying Cloud Builder...`);
 
         // Monitor Firestore for the 'ready' status from Cloud Function
         await new Promise((resolve, reject) => {
           let lastStep = "";
+          // ૩૦ સેકન્ડનો વોર્નિંગ ટાઈમર
+          const timeoutWatcher = setTimeout(() => {
+            if (lastStep === "") {
+              addLog("⚠️ Build is taking longer than usual to start. Please ensure Firebase Blaze Plan is active and check Cloud Function logs.");
+            }
+          }, 30000);
+
           const unsub = onSnapshot(doc(db, "simulations", finalId), (docSnap) => {
             const data = docSnap.data();
             
@@ -194,6 +209,7 @@ export function SimulationEditor() {
             }
 
             if (data?.status === 'ready' || data?.storageUrl) {
+              clearTimeout(timeoutWatcher);
               addLog(`🚀 Cloud build successful!`);
               const storageRef = ref(storage, `simulations/${finalId}.zip`);
               getDownloadURL(storageRef).then(url => {
@@ -202,6 +218,7 @@ export function SimulationEditor() {
                 resolve(true);
               }).catch(reject);
             } else if (data?.status === 'error') {
+              clearTimeout(timeoutWatcher);
               unsub();
               reject(new Error(data.errorMessage || "Cloud build failed."));
             }

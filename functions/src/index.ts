@@ -161,11 +161,19 @@ export const onSimulationUpload = functions.runWith({
   const simId = path.basename(filePath, '.zip');
 
   const updateProgress = (step: string) => 
-    db.collection('simulations').doc(simId).update({ buildStep: step });
+    db.collection('simulations').doc(simId).update({ 
+        buildStep: step,
+        status: 'building',
+        lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+    });
 
   try {
+    console.log(`Cloud Build triggered for: ${simId}`);
+    // તાત્કાલિક અપડેટ જેથી UI માં "Waiting" નીકળી જાય
+    await updateProgress("Cloud Engine is waking up...");
+
     // 1. Download from Storage
-    await updateProgress("Downloading source files...");
+    await updateProgress("Downloading source files (ZIP)...");
     await bucket.file(filePath).download({ destination: tempZipPath });
 
     // 2. Extract
@@ -240,11 +248,18 @@ export const onSimulationUpload = functions.runWith({
     await updateProgress("Building React application...");
     await runCmd('npm', ['run', 'build']);
 
-    // 5. Zip the 'dist' folder
+    // 5. Find output folder (Vite uses 'dist', CRA uses 'build')
     await updateProgress("Zipping build artifacts...");
-    const distPath = path.join(buildDir, 'dist');
+    const distPathVite = path.join(buildDir, 'dist');
+    const distPathCRA = path.join(buildDir, 'build');
+    const finalDistPath = fs.existsSync(distPathVite) ? distPathVite : (fs.existsSync(distPathCRA) ? distPathCRA : null);
+
+    if (!finalDistPath) {
+      throw new Error("Build succeeded but no 'dist' or 'build' folder was found.");
+    }
+
     const outZip = new AdmZip();
-    outZip.addLocalFolder(distPath);
+    outZip.addLocalFolder(finalDistPath);
     const finalZipBuffer = outZip.toBuffer();
 
     // 6. Upload back to Storage
