@@ -184,8 +184,15 @@ export function SimulationEditor() {
 
         // Monitor Firestore for the 'ready' status from Cloud Function
         await new Promise((resolve, reject) => {
+          let lastStep = "";
           const unsub = onSnapshot(doc(db, "simulations", finalId), (docSnap) => {
             const data = docSnap.data();
+            
+            if (data?.buildStep && data.buildStep !== lastStep) {
+              addLog(`⚙️ ${data.buildStep}`);
+              lastStep = data.buildStep;
+            }
+
             if (data?.status === 'ready' || data?.storageUrl) {
               addLog(`🚀 Cloud build successful!`);
               const storageRef = ref(storage, `simulations/${finalId}.zip`);
@@ -197,8 +204,6 @@ export function SimulationEditor() {
             } else if (data?.status === 'error') {
               unsub();
               reject(new Error(data.errorMessage || "Cloud build failed."));
-            } else {
-              addLog(`Building in cloud...`);
             }
           });
         });

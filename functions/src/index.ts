@@ -160,11 +160,16 @@ export const onSimulationUpload = functions.runWith({
   const extractDir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-'));
   const simId = path.basename(filePath, '.zip');
 
+  const updateProgress = (step: string) => 
+    db.collection('simulations').doc(simId).update({ buildStep: step });
+
   try {
     // 1. Download from Storage
+    await updateProgress("Downloading source files...");
     await bucket.file(filePath).download({ destination: tempZipPath });
 
     // 2. Extract
+    await updateProgress("Extracting project...");
     const zip = new AdmZip(tempZipPath);
     zip.extractAllTo(extractDir, true);
 
@@ -185,16 +190,21 @@ export const onSimulationUpload = functions.runWith({
       p.on('close', code => code === 0 ? res(null) : rej(new Error(`${cmd} failed`)));
     });
 
-    await runCmd('npm', ['install', '--legacy-peer-deps', '--no-audit']);
+    await updateProgress("Installing dependencies (this takes a minute)...");
+    await runCmd('npm', ['install', '--legacy-peer-deps', '--no-audit', '--no-fund', '--quiet']);
+    
+    await updateProgress("Building React application...");
     await runCmd('npm', ['run', 'build']);
 
     // 5. Zip the 'dist' folder
+    await updateProgress("Zipping build artifacts...");
     const distPath = path.join(buildDir, 'dist');
     const outZip = new AdmZip();
     outZip.addLocalFolder(distPath);
     const finalZipBuffer = outZip.toBuffer();
 
     // 6. Upload back to Storage
+    await updateProgress("Saving to cloud storage...");
     const destination = `simulations/${simId}.zip`;
     const file = bucket.file(destination);
     await file.save(finalZipBuffer, { 
@@ -204,7 +214,8 @@ export const onSimulationUpload = functions.runWith({
 
     // 7. Update Firestore
     await db.collection('simulations').doc(simId).update({
-      status: 'ready'
+      status: 'ready',
+      buildStep: 'Completed'
     });
 
     // Clean up
