@@ -149,7 +149,7 @@ function findPackageJsonDir(dir: string): string | null {
  * Memory and Timeout must be increased in Firebase Console for this.
  */
 export const onSimulationUpload = functions.runWith({
-  memory: '4GB',
+  memory: '4GB', // Ensure this is 4GB for faster npm installs
   timeoutSeconds: 540 // 9 minutes
 }).storage.object().onFinalize(async (object) => {
   const filePath = object.name; // e.g., 'pending-builds/sim_123.zip'
@@ -182,16 +182,60 @@ export const onSimulationUpload = functions.runWith({
 
     // 4. Run Build (spawn commands)
     const runCmd = (cmd: string, args: string[]) => new Promise((res, rej) => {
+      console.log(`Executing: ${cmd} ${args.join(' ')} in ${buildDir}`);
       const p = spawn(cmd, args, { 
         cwd: buildDir, 
         shell: true,
-        env: { ...process.env, CI: 'true' } 
+        env: { 
+          ...process.env, 
+          CI: 'true', 
+          NODE_OPTIONS: '--max-old-space-size=3072',
+          npm_config_cache: path.join(os.tmpdir(), '.npm') 
+        } 
       });
-      p.on('close', code => code === 0 ? res(null) : rej(new Error(`${cmd} failed`)));
+
+      p.stdout.on('data', (data) => console.log(`[${cmd}]: ${data.toString()}`));
+      p.stderr.on('data', (data) => console.error(`[${cmd} ERR]: ${data.toString()}`));
+
+      p.on('close', code => code === 0 ? res(null) : rej(new Error(`${cmd} failed with code ${code}`)));
     });
 
-    await updateProgress("Installing dependencies (this takes a minute)...");
-    await runCmd('npm', ['install', '--legacy-peer-deps', '--no-audit', '--no-fund', '--quiet']);
+    await updateProgress("Initializing build environment...");
+    
+    // Patching: Ensure build is optimized for hosting (Same as local server logic)
+    try {
+      const pkgJsonPath = path.join(buildDir, 'package.json');
+      if (fs.existsSync(pkgJsonPath)) {
+        const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+        if (pkg.scripts && pkg.scripts.build && !pkg.scripts.build.includes('--base')) {
+          pkg.scripts.build = pkg.scripts.build.replace('vite build', 'vite build --base=./');
+          fs.writeFileSync(pkgJsonPath, JSON.stringify(pkg, null, 2));
+        }
+      }
+
+      const viteConfigPath = fs.readdirSync(buildDir).find(f => f.startsWith('vite.config.'));
+      if (viteConfigPath) {
+        const fullPath = path.join(buildDir, viteConfigPath);
+        let content = fs.readFileSync(fullPath, 'utf8');
+        if (!content.includes('base:')) {
+          content = content.replace(/(defineConfig\(\{)/, '$1 base: "./",');
+          fs.writeFileSync(fullPath, content);
+        }
+        
+        // Workbox patch for larger files
+        if (content.includes('VitePWA')) {
+          if (!content.includes('maximumFileSizeToCacheInBytes')) {
+            content = content.replace(/(workbox:\s*\{)/, '$1 maximumFileSizeToCacheInBytes: 52428800, ');
+          }
+          fs.writeFileSync(fullPath, content);
+        }
+      }
+    } catch (patchErr) {
+      console.warn("Pre-build patch warning:", patchErr);
+    }
+
+    await updateProgress("Installing dependencies...");
+    await runCmd('npm', ['install', '--legacy-peer-deps', '--no-audit', '--no-fund', '--loglevel=error']);
     
     await updateProgress("Building React application...");
     await runCmd('npm', ['run', 'build']);
