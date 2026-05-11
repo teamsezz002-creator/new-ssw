@@ -10,6 +10,16 @@ type BuildResult = {
   outputFolder: string;
 };
 
+class BuildError extends Error {
+  logs: string[];
+
+  constructor(message: string, logs: string[]) {
+    super(message);
+    this.name = 'BuildError';
+    this.logs = logs;
+  }
+}
+
 function addLog(logs: string[], message: string) {
   logs.push(message);
 }
@@ -131,7 +141,19 @@ async function buildUploadedProject(zipBuffer: Buffer): Promise<BuildResult> {
 
     patchBuildFiles(buildDir, logs);
     await runCommand('npm', ['install', '--include=dev', '--legacy-peer-deps', '--no-audit', '--no-fund', '--loglevel=error'], buildDir, logs);
-    await runCommand('npm', ['run', 'build'], buildDir, logs);
+
+    try {
+      await runCommand('npm', ['run', 'build'], buildDir, logs);
+    } catch (primaryBuildError) {
+      addLog(logs, 'Primary build command failed. Trying a Vite fallback build...');
+      try {
+        await runCommand('npx', ['vite', 'build', '--base=./'], buildDir, logs);
+      } catch (fallbackError) {
+        const primaryMessage = primaryBuildError instanceof Error ? primaryBuildError.message : String(primaryBuildError);
+        const fallbackMessage = fallbackError instanceof Error ? fallbackError.message : String(fallbackError);
+        throw new BuildError(`Build failed. Primary: ${primaryMessage}. Fallback: ${fallbackMessage}`, logs);
+      }
+    }
 
     const distDir = fs.existsSync(path.join(buildDir, 'dist'))
       ? path.join(buildDir, 'dist')
@@ -153,6 +175,13 @@ async function buildUploadedProject(zipBuffer: Buffer): Promise<BuildResult> {
       zipBase64: builtZip.toString('base64'),
       outputFolder: path.basename(distDir),
     };
+  } catch (error) {
+    if (error instanceof BuildError) {
+      throw error;
+    }
+
+    const message = error instanceof Error ? error.message : 'Build failed unexpectedly.';
+    throw new BuildError(message, logs);
   } finally {
     fs.rmSync(tempRoot, { recursive: true, force: true });
   }
@@ -179,6 +208,7 @@ export async function POST(request: Request) {
     return Response.json(result);
   } catch (error) {
     const message = error instanceof Error ? error.message : 'Build failed unexpectedly.';
-    return Response.json({ error: message }, { status: 500 });
+    const logs = error instanceof BuildError ? error.logs : [];
+    return Response.json({ error: message, logs }, { status: 500 });
   }
 }
