@@ -1,7 +1,6 @@
 import React, { createContext, useContext, useState, useEffect } from 'react';
 import { db } from '../services/firebase';
 import { doc, getDoc, setDoc, getDocFromServer } from 'firebase/firestore';
-import firebaseConfig from '../../firebase-applet-config.json';
 
 export type Role = 'super_admin' | 'organization' | 'personal_user';
 
@@ -32,8 +31,8 @@ const AuthContext = createContext<AuthContextType>({
 export const useAuth = () => useContext(AuthContext);
 
 const testConnection = async () => {
-    // ચેક કરો કે યુઝરે Config અપડેટ કર્યું છે કે નહીં
-    if (!firebaseConfig.apiKey || firebaseConfig.apiKey === "YOUR_API_KEY") {
+    const apiKey = import.meta.env.VITE_FIREBASE_API_KEY;
+    if (!apiKey || apiKey === "YOUR_API_KEY") {
         throw new Error("Firebase is not configured. Please update firebase-applet-config.json with your actual API keys.");
     }
 

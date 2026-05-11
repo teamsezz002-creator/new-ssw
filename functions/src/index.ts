@@ -168,7 +168,6 @@ export const onSimulationUpload = functions.runWith({
     zip.extractAllTo(extractDir, true);
 
     // 3. Find directory with package.json
-    const buildDir = extractDir; // simplify for now
     const buildDir = findPackageJsonDir(extractDir);
     if (!buildDir) {
       throw new Error("Could not find package.json in the uploaded ZIP.");

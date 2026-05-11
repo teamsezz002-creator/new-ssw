@@ -13,12 +13,13 @@ import {
   Play,
   ChevronLeft,
   Loader2,
-  CheckCircle2,
 } from "lucide-react";
 import { motion, AnimatePresence } from "motion/react";
 import clsx from "clsx";
 import { Simulation } from "../types";
 import { v4 as uuidv4 } from "uuid";
+import { extractAndHostZip } from "../services/zipHost";
+
 export function Player() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -153,15 +154,13 @@ export function Player() {
       setIsReady(true);
       return;
     }
-    fetch(`/api/check-installed/${sim.id}`)
-      .then((res) => res.json())
-      .then((data) => {
-        if (data.installed) {
-          setVirtualUrl(data.url);
-          setIsReady(true);
-        }
-      })
-      .catch((err) => console.error("Check install error:", err));
+    // Vercel check: જો ફાઈલ પહેલેથી કેશમાં હોય તો ડાયરેક્ટ રેડી કરી દો
+    caches.match(`/virtual-games/${sim.id}/index.html`).then(match => {
+      if (match) {
+        setVirtualUrl(`/virtual-games/${sim.id}/index.html`);
+        setIsReady(true);
+      }
+    });
   }, [sim]);
 
   if (!sim) {
@@ -178,33 +177,20 @@ export function Player() {
       setDownloading(true);
       setDownloadProgress(0);
       setErrorMsg(null);
-
-      const progressInterval = setInterval(() => {
-        setDownloadProgress((prev) => {
-          if (prev < 80) return prev + Math.floor(Math.random() * 5) + 1;
-          return prev;
-        });
-      }, 300);
       try {
-        const response = await fetch("/api/mount-zip", {
-          method: "POST",
-          headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ simId: sim.id, zipUrl: sim.storageUrl }),
-        });
-        clearInterval(progressInterval);
+        const response = await fetch(sim.storageUrl);
         if (!response.ok) {
-          const text = await response.text();
-          throw new Error(text || "Failed to extract zip on server");
+          throw new Error("Failed to download simulation files.");
         }
-        const data = await response.json();
-        if (data.url) setVirtualUrl(data.url);
+
+        // Client-side extraction via JSZip (zipHost)
+        const url = await extractAndHostZip(sim.id, response);
+        setVirtualUrl(url);
+        
         setDownloadProgress(100);
-        setTimeout(() => {
-          setDownloading(false);
-          setIsReady(true);
-        }, 800);
+        setIsReady(true);
+        setDownloading(false);
       } catch (err: any) {
-        clearInterval(progressInterval);
         console.error("Extraction error:", err);
         setErrorMsg(err.message || "Something went wrong during installation.");
         setDownloading(false);
