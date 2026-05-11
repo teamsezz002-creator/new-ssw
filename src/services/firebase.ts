@@ -1,6 +1,6 @@
 import { initializeApp } from 'firebase/app';
 import { getAuth } from 'firebase/auth';
-import { getFirestore } from 'firebase/firestore';
+import { getFirestore, FieldValue } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 // JSON ફાઇલ ન મળે તો Environment Variables વાપરો (Vercel માટે)
@@ -28,3 +28,4 @@ const app = initializeApp(config);
 export const db = getFirestore(app);
 export const auth = getAuth(app);
 export const storage = getStorage(app);
+export { FieldValue };

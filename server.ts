@@ -223,7 +223,7 @@ async function startServer() {
 
       jobLog(`Ensuring missing dependencies are installed (react-is)...`);
       try {
-          await runCommand("npm", ["install", "react-is", "--legacy-peer-deps", "--no-audit", "--no-fund", "--loglevel=error"], buildDir);
+          await runCommand("npm", ["install", "react-is", "--legacy-peer-deps", "--no-audit", "--no-fund", "--loglevel=error"], buildDir, jobLog);
       } catch(e) {
           console.warn("Failed to install react-is, continuing...");
       }
@@ -291,7 +291,7 @@ async function startServer() {
       }
       jobLog(`Setting Vite base to relative...`);
       console.log(`Building React app...`);
-      await runCommand("npm", ["run", "build"], buildDir);
+      await runCommand("npm", ["run", "build"], buildDir, jobLog);
 
       // Vite typically outputs to 'dist' or 'build'
       const distDirVite = path.join(buildDir, "dist");
@@ -316,7 +316,7 @@ async function startServer() {
       buildJobs.set(jobId, { status: 'completed', zipPath: finalZipPath, logs: buildJobs.get(jobId)?.logs || [] });
     } catch (e: any) {
       jobLog(`[ERROR] Build failed for ${jobId}: ${e}`);
-      buildJobs.set(jobId, { status: 'error', message: e.message || String(e) });
+      buildJobs.set(jobId, { status: 'error', message: e.message || String(e), logs: buildJobs.get(jobId)?.logs || [] });
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });
       if (fs.existsSync(zipPath)) {
