@@ -32,8 +32,8 @@ export const useAuth = () => useContext(AuthContext);
 
 const testConnection = async () => {
     const apiKey = import.meta.env.VITE_FIREBASE_API_KEY;
-    if (!apiKey || apiKey === "YOUR_API_KEY" || apiKey === "missing") {
-        throw new Error("Firebase API Key is missing or invalid. Please set VITE_FIREBASE_API_KEY in Vercel settings.");
+    if (!apiKey || apiKey === "YOUR_API_KEY" || apiKey === "missing" || apiKey === "undefined") {
+        throw new Error("Firebase configuration is missing. Please set Environment Variables in Vercel and REDEPLOY your site.");
     }
 
     try {

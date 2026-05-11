@@ -169,12 +169,7 @@ export function SimulationEditor() {
 
       addLog(`Uploading source to Firebase Storage for Cloud Build...`);
       try {
-        // Upload to a path that triggers the Cloud Function
-        const pendingRef = ref(storage, `pending-builds/${finalId}.zip`);
-        await uploadBytes(pendingRef, uploadFile);
-        addLog(`✓ Source uploaded. Waiting for Cloud Function to build...`);
-
-        // Initial Firestore Record
+        // ૧. પહેલા Firestore રેકોર્ડ બનાવો (Building સ્ટેટસ સાથે)
         await setDoc(doc(db, "simulations", finalId), {
           ...formData,
           id: finalId,
@@ -182,15 +177,23 @@ export function SimulationEditor() {
           timestamp: Date.now()
         });
 
+        // ૨. હવે ZIP અપલોડ કરો જે Cloud Function ને ટ્રિગર કરશે
+        const pendingRef = ref(storage, `pending-builds/${finalId}.zip`);
+        await uploadBytes(pendingRef, uploadFile);
+        addLog(`✓ Source uploaded. Waiting for Cloud Function to build...`);
+
         // Monitor Firestore for the 'ready' status from Cloud Function
         await new Promise((resolve, reject) => {
           const unsub = onSnapshot(doc(db, "simulations", finalId), (docSnap) => {
             const data = docSnap.data();
-            if (data?.status === 'ready') {
+            if (data?.status === 'ready' || data?.storageUrl) {
               addLog(`🚀 Cloud build successful!`);
-              storageUrl = data.storageUrl;
-              unsub();
-              resolve(true);
+              const storageRef = ref(storage, `simulations/${finalId}.zip`);
+              getDownloadURL(storageRef).then(url => {
+                storageUrl = url;
+                unsub();
+                resolve(true);
+              }).catch(reject);
             } else if (data?.status === 'error') {
               unsub();
               reject(new Error(data.errorMessage || "Cloud build failed."));

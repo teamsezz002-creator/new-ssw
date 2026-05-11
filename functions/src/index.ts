@@ -158,6 +158,7 @@ export const onSimulationUpload = functions.runWith({
   const bucket = admin.storage().bucket(object.bucket);
   const tempZipPath = path.join(os.tmpdir(), 'upload.zip');
   const extractDir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-'));
+  const simId = path.basename(filePath, '.zip');
 
   try {
     // 1. Download from Storage
@@ -169,13 +170,18 @@ export const onSimulationUpload = functions.runWith({
 
     // 3. Find directory with package.json
     const buildDir = findPackageJsonDir(extractDir);
+    console.log(`Build directory identified: ${buildDir}`);
     if (!buildDir) {
       throw new Error("Could not find package.json in the uploaded ZIP.");
     }
 
     // 4. Run Build (spawn commands)
     const runCmd = (cmd: string, args: string[]) => new Promise((res, rej) => {
-      const p = spawn(cmd, args, { cwd: buildDir, shell: true });
+      const p = spawn(cmd, args, { 
+        cwd: buildDir, 
+        shell: true,
+        env: { ...process.env, CI: 'true' } 
+      });
       p.on('close', code => code === 0 ? res(null) : rej(new Error(`${cmd} failed`)));
     });
 
@@ -189,20 +195,27 @@ export const onSimulationUpload = functions.runWith({
     const finalZipBuffer = outZip.toBuffer();
 
     // 6. Upload back to Storage
-    const simId = path.basename(filePath, '.zip');
     const destination = `simulations/${simId}.zip`;
-    await bucket.file(destination).save(finalZipBuffer, { contentType: 'application/zip' });
+    const file = bucket.file(destination);
+    await file.save(finalZipBuffer, { 
+      contentType: 'application/zip',
+      metadata: { cacheControl: 'public, max-age=31536000' }
+    });
 
     // 7. Update Firestore
     await db.collection('simulations').doc(simId).update({
-      status: 'ready',
-      storageUrl: `https://storage.googleapis.com/${object.bucket}/${destination}`
+      status: 'ready'
     });
 
     // Clean up
     await bucket.file(filePath).delete();
   } catch (error) {
     console.error("Build failed:", error);
+    // બિલ્ડ ફેલ થાય તો Firestore માં એરર મોકલો જેથી UI અપડેટ થાય
+    await db.collection('simulations').doc(simId).update({
+      status: 'error',
+      errorMessage: error instanceof Error ? error.message : "Cloud build failed unexpectedly."
+    });
   } finally {
     fs.rmSync(extractDir, { recursive: true, force: true });
     if (fs.existsSync(tempZipPath)) fs.unlinkSync(tempZipPath);

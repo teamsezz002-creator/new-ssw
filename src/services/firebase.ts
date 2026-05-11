@@ -13,11 +13,13 @@ const config: any = {
   appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
 
-// જો કોઈ પણ કી ખૂટતી હોય તો કોન્સોલમાં વોર્નિંગ આપો
-const missingKeys = Object.keys(config).filter(key => !config[key]);
-if (missingKeys.length > 0) {
-  console.error(`Firebase configuration error: Missing keys [${missingKeys.join(', ')}]. Check Vercel Environment Variables.`);
-  // Firebase ને ખાલી ઓબ્જેક્ટ આપવાથી એરર આવશે, પણ આપણે તેને રોકવા માટે ડિફોલ્ટ આપીએ
+// ચેક કરો કે કઈ કી ખૂટે છે
+const missingKeys = Object.entries(config)
+  .filter(([_, value]) => !value || value === "missing" || value === "undefined")
+  .map(([key]) => `VITE_FIREBASE_${key.replace(/[A-Z]/g, letter => `_${letter}`).toUpperCase()}`);
+
+if (missingKeys.length > 0 && import.meta.env.PROD) {
+  console.error("CRITICAL: Missing Vercel Environment Variables:", missingKeys);
   if (!config.apiKey) config.apiKey = "invalid_key_check_vercel";
 }
 
