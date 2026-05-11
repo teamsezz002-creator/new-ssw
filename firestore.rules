@@ -1,0 +1,44 @@
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+    // Default deny
+    match /{document=**} {
+      allow read, write: if false;
+    }
+
+    match /users/{userId} {
+      allow get: if true;
+      allow list: if true;
+      allow write: if true; // Needs proper restriction in production
+    }
+
+    match /simulations/{simId} {
+      allow read: if true;
+      allow write: if true;
+    }
+
+    // New Event Driven Analytics Rules
+    match /events/{eventId} {
+      allow read: if request.auth != null && (resource.data.studentId == request.auth.uid || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['super_admin', 'organization']);
+      
+      allow create: if request.auth != null 
+                    && request.resource.data.studentId == request.auth.uid
+                    && request.resource.data.eventType in [
+                      'SIMULATION_START', 'SIMULATION_END', 'SESSION_START', 'SESSION_END', 
+                      'XP_EARNED', 'LEVEL_UP', 'TASK_COMPLETED', 'QUESTION_ATTEMPT', 
+                      'ANSWER_CORRECT', 'ANSWER_WRONG', 'HINT_USED', 'HEARTBEAT'
+                    ];
+      allow update, delete: if false;
+    }
+
+    match /user_metrics/{studentId} {
+      allow read: if request.auth != null && (studentId == request.auth.uid || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['super_admin', 'organization']);
+      allow write: if false; // Only Cloud Functions can update this
+    }
+
+    match /simulation_sessions/{sessionId} {
+      allow read: if request.auth != null && (resource.data.studentId == request.auth.uid || get(/databases/$(database)/documents/users/$(request.auth.uid)).data.role in ['super_admin', 'organization']);
+      allow write: if false; // Only Cloud Functions can update this
+    }
+  }
+}

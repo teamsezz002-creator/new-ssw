@@ -1,0 +1,105 @@
+{
+  "entities": {
+    "simulation": {
+      "title": "Simulation Metadata",
+      "description": "Information about a stored simulation",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "title": { "type": "string" },
+        "description": { "type": "string" },
+        "sourceType": { "type": "string", "enum": ["local", "url", "uploaded"] },
+        "storageUrl": { "type": "string" },
+        "uploadedAt": { "type": "string", "format": "date-time" }
+      },
+      "required": ["id", "title", "sourceType"]
+    },
+    "user": {
+      "title": "User Account",
+      "description": "User profile and role information",
+      "type": "object",
+      "properties": {
+        "id": { "type": "string" },
+        "name": { "type": "string" },
+        "password": { "type": "string" },
+        "role": { "type": "string", "enum": ["super_admin", "organization", "personal_user"] },
+        "organizationId": { "type": "string" },
+        "maxMembers": { "type": "integer" },
+        "expiryDate": { "type": "integer" }
+      },
+      "required": ["id", "name", "password", "role"]
+    },
+    "event": {
+      "title": "Tracking Event",
+      "description": "Raw tracking data from simulation",
+      "type": "object",
+      "properties": {
+        "eventType": { "type": "string" },
+        "studentId": { "type": "string" },
+        "simulationId": { "type": "string" },
+        "sessionId": { "type": "string" },
+        "timestamp": { "type": "integer" },
+        "data": { "type": "object" }
+      },
+      "required": ["eventType", "studentId", "simulationId", "sessionId", "timestamp"]
+    },
+    "userMetric": {
+      "title": "User Metrics",
+      "description": "Aggregated user statistics",
+      "type": "object",
+      "properties": {
+        "studentId": { "type": "string" },
+        "totalXP": { "type": "integer" },
+        "currentLevel": { "type": "integer" },
+        "totalTimeSpent": { "type": "integer" },
+        "totalCorrect": { "type": "integer" },
+        "totalAttempts": { "type": "integer" },
+        "totalTasksCompleted": { "type": "integer" },
+        "totalSimulationsCompleted": { "type": "integer" }
+      },
+      "required": ["studentId"]
+    },
+    "simulationSession": {
+      "title": "Simulation Session Report",
+      "description": "Per game session statistics",
+      "type": "object",
+      "properties": {
+        "sessionId": { "type": "string" },
+        "studentId": { "type": "string" },
+        "simulationId": { "type": "string" },
+        "startTime": { "type": "integer" },
+        "endTime": { "type": "integer" },
+        "timeSpent": { "type": "integer" },
+        "xpEarned": { "type": "integer" },
+        "correctAnswers": { "type": "integer" },
+        "wrongAnswers": { "type": "integer" },
+        "attempts": { "type": "integer" },
+        "tasksCompleted": { "type": "integer" },
+        "hintsUsed": { "type": "integer" }
+      },
+      "required": ["sessionId", "studentId", "simulationId"]
+    }
+  },
+  "firestore": {
+    "/simulations/{simulationId}": {
+      "schema": "simulation",
+      "description": "Collection of all available simulations"
+    },
+    "/users/{userId}": {
+      "schema": "user",
+      "description": "System users and members"
+    },
+    "/events/{eventId}": {
+      "schema": "event",
+      "description": "Raw tracking data from simulation"
+    },
+    "/user_metrics/{studentId}": {
+      "schema": "userMetric",
+      "description": "Aggregated user statistics"
+    },
+    "/simulation_sessions/{sessionId}": {
+      "schema": "simulationSession",
+      "description": "Per game session statistics"
+    }
+  }
+}
