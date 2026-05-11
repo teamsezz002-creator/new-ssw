@@ -31,6 +31,8 @@ export function SimulationEditor() {
   });
 
   const [uploadFile, setUploadFile] = useState<File | null>(null);
+  const [jobId, setJobId] = useState<string | null>(null); // To store the simId for Firestore listener
+  const unsubscribeRef = useRef<(() => void) | null>(null); // To store the unsubscribe function
   const [buildStatus, setBuildStatus] = useState<'idle' | 'running' | 'success' | 'error'>('idle');
   const [buildLogs, setBuildLogs] = useState<{ time: string, message: string }[]>([]);
   const [imageFiles, setImageFiles] = useState<{ 
@@ -59,6 +61,43 @@ export function SimulationEditor() {
   useEffect(() => {
     scrollToBottom();
   }, [buildLogs, buildStatus]);
+
+  // New useEffect for Firestore listener to get real-time build status and logs
+  useEffect(() => {
+    if (jobId) {
+      // Clear previous listener if any
+      if (unsubscribeRef.current) {
+        unsubscribeRef.current();
+        unsubscribeRef.current = null;
+      }
+
+      const simDocRef = doc(db, "simulations", jobId);
+      unsubscribeRef.current = onSnapshot(simDocRef, (docSnap) => {
+        const data = docSnap.data();
+        if (data) {
+          // Update local buildLogs from Firestore
+          if (data.buildLogs && data.buildLogs.length > buildLogs.length) {
+            const newLogs = data.buildLogs.slice(buildLogs.length);
+            setBuildLogs(prev => [...prev, ...newLogs.map(msg => ({ time: new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute:'2-digit', second:'2-digit', fractionalSecondDigits: 3 }), message: msg }))]);
+          }
+
+          // Update build status
+          if (data.status === 'ready') {
+            setBuildStatus('success');
+          } else if (data.status === 'error') {
+            setBuildStatus('error');
+          } else if (data.status === 'building') {
+            setBuildStatus('running');
+          }
+        }
+      }, (error) => {
+        console.error("Error listening to build status:", error);
+        setBuildStatus('error');
+        addLog(`❌ Error monitoring build: ${error.message}`);
+      });
+    }
+    return () => { if (unsubscribeRef.current) unsubscribeRef.current(); };
+  }, [jobId, buildLogs.length]); // Re-run effect if jobId or local log length changes
 
   const handleTextChange = (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => {
     setFormData(prev => ({ ...prev, [e.target.name]: e.target.value }));
@@ -100,14 +139,9 @@ export function SimulationEditor() {
   };
 
   const addLog = (message: string) => {
-    const time = new Date().toLocaleTimeString([], { 
-        hour12: false, 
-        hour: '2-digit', 
-        minute:'2-digit', 
-        second:'2-digit', 
-        fractionalSecondDigits: 3 
-    });
-    setBuildLogs(prev => [...prev, { time, message }]);
+    const time = new Date().toLocaleTimeString([], { hour12: false, hour: '2-digit', minute:'2-digit', second:'2-digit', fractionalSecondDigits: 3 });
+    setBuildLogs(prev => [...prev, { time, message }]); // Only update local state
+    // Firestore updates are now handled by the Cloud Function or initial setDoc
   };
 
   const simulateBuildProcess = async () => {
@@ -115,6 +149,7 @@ export function SimulationEditor() {
     setBuildLogs([]);
     addLog('Initializing deployment pipeline...');
 
+    // Determine finalId and set jobId for Firestore listener
     const finalId = isEditing ? id! : `sim_new_${Date.now()}`;
     let storageUrl = formData.storageUrl || '';
 
@@ -122,6 +157,7 @@ export function SimulationEditor() {
     let finalThumbnail = formData.thumbnail;
     let finalHero = formData.heroImage;
     let finalScreenshots = [...(formData.screenshots || [])];
+    setJobId(finalId);
 
     try {
       addLog('Uploading images to Firebase Storage...');
@@ -155,7 +191,9 @@ export function SimulationEditor() {
 
     if (uploadFile) {
       addLog(`Authenticating...`);
+      // Ensure anonymous auth is enabled in Firebase Console for this to work
       try {
+        // This is a client-side anonymous sign-in, not directly related to the Cloud Function's auth
         await signInAnonymously(auth);
         addLog(`✓ Authenticated anonymously.`);
       } catch (err: any) {
@@ -165,14 +203,19 @@ export function SimulationEditor() {
 
       if (uploadFile.size > 30 * 1024 * 1024) {
         throw new Error(`The uploaded ZIP file is too large (${(uploadFile.size / 1024 / 1024).toFixed(1)}MB). Please ensure you have removed the 'node_modules' folder and 'dist' folder before zipping your project. The maximum allowed size is 30MB.`);
+        // Client-side validation error, update Firestore directly
+        const errMsg = `The uploaded ZIP file is too large (${(uploadFile.size / 1024 / 1024).toFixed(1)}MB). Please ensure you have removed the 'node_modules' folder and 'dist' folder before zipping your project. The maximum allowed size is 30MB.`;
+        addLog(`❌ ${errMsg}`);
+        setBuildStatus('error');
+        await setDoc(doc(db, "simulations", finalId), { status: 'error', errorMessage: errMsg, buildLogs: admin.firestore.FieldValue.arrayUnion(`[${new Date().toISOString()}] ${errMsg}`) }, { merge: true });
+        return;
       }
 
       try {
         addLog(`Preparing Cloud Build environment...`);
         
-        // ૧. Firestore માં એન્ટ્રી બનાવો
-        await setDoc(doc(db, "simulations", finalId), { ...formData, id: finalId, status: 'building', timestamp: Date.now() });
-
+        // Initialize Firestore document with building status and empty logs
+        await setDoc(doc(db, "simulations", finalId), { ...formData, id: finalId, status: 'building', timestamp: Date.now(), buildLogs: admin.firestore.FieldValue.arrayUnion(`[${new Date().toISOString()}] Preparing Cloud Build environment...`) });
         // ૨. ZIP અપલોડ પ્રોસેસ વિથ પ્રોગ્રેસ
         const pendingRef = ref(storage, `pending-builds/${finalId}.zip`);
         const uploadTask = uploadBytesResumable(pendingRef, uploadFile);
@@ -181,54 +224,19 @@ export function SimulationEditor() {
           uploadTask.on('state_changed', 
             (snapshot) => {
               const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
-              if (progress % 20 === 0) addLog(`Uploading source: ${progress}%`);
+              if (progress % 10 === 0 && progress !== 0) addLog(`Uploading source: ${progress}%`);
             },
             (error) => reject(error),
             () => resolve(true)
           );
         });
-
         addLog(`✓ Source uploaded. Notifying Cloud Builder...`);
-
-        // Monitor Firestore for the 'ready' status from Cloud Function
-        await new Promise((resolve, reject) => {
-          let lastStep = "";
-          // ૩૦ સેકન્ડનો વોર્નિંગ ટાઈમર
-          const timeoutWatcher = setTimeout(() => {
-            if (lastStep === "") {
-              addLog("⚠️ Build is taking longer than usual to start. Please ensure Firebase Blaze Plan is active and check Cloud Function logs.");
-            }
-          }, 30000);
-
-          const unsub = onSnapshot(doc(db, "simulations", finalId), (docSnap) => {
-            const data = docSnap.data();
-            
-            if (data?.buildStep && data.buildStep !== lastStep) {
-              addLog(`⚙️ ${data.buildStep}`);
-              lastStep = data.buildStep;
-            }
-
-            if (data?.status === 'ready' || data?.storageUrl) {
-              clearTimeout(timeoutWatcher);
-              addLog(`🚀 Cloud build successful!`);
-              const storageRef = ref(storage, `simulations/${finalId}.zip`);
-              getDownloadURL(storageRef).then(url => {
-                storageUrl = url;
-                unsub();
-                resolve(true);
-              }).catch(reject);
-            } else if (data?.status === 'error') {
-              clearTimeout(timeoutWatcher);
-              unsub();
-              reject(new Error(data.errorMessage || "Cloud build failed."));
-            }
-          });
-        });
-
       } catch (error: any) {
         console.error("Build/Upload error:", error);
-        addLog(`❌ Build or Upload failed: ${error.message || String(error)}`);
+        const errMsg = error.message || String(error);
+        addLog(`❌ Build or Upload failed: ${errMsg}`);
         setBuildStatus('error');
+        await setDoc(doc(db, "simulations", finalId), { status: 'error', errorMessage: errMsg, buildLogs: admin.firestore.FieldValue.arrayUnion(`[${new Date().toISOString()}] ${errMsg}`) }, { merge: true });
         return;
       }
     } else {
@@ -253,21 +261,15 @@ export function SimulationEditor() {
     } as Simulation;
 
     try {
-      await setDoc(doc(db, "simulations", finalId), finalSim);
+      await setDoc(doc(db, "simulations", finalId), finalSim, { merge: true }); // Merge to not overwrite buildLogs
       addLog('✓ Database record saved.');
     } catch(err) {
-      addLog(`❌ Firestore error: ${String(err)}`);
+      const errMsg = String(err);
+      addLog(`❌ Firestore error: ${errMsg}`);
       setBuildStatus('error');
+      await setDoc(doc(db, "simulations", finalId), { status: 'error', errorMessage: errMsg, buildLogs: admin.firestore.FieldValue.arrayUnion(`[${new Date().toISOString()}] ${errMsg}`) }, { merge: true });
       return;
     }
-
-    addLog('🚀 Simulation deployed and ready!');
-    setBuildStatus('success');
-    saveSimulation(finalSim);
-
-    setTimeout(() => {
-      navigate('/studio');
-    }, 2000);
   };
 
   const handleSave = () => {
@@ -515,7 +517,7 @@ export function SimulationEditor() {
             <div className="h-12 bg-white/5 border-b border-white/10 flex items-center px-4 justify-between">
               <div className="flex items-center gap-3">
                 <Terminal className="w-4 h-4 text-slate-400" />
-                <span className="text-sm font-mono text-slate-300 font-bold">Build & Deployment Console</span>
+                <span className="text-sm font-mono text-slate-300 font-bold">Build & Deployment Console ({jobId})</span>
               </div>
               <div className="flex gap-2">
                 <div className="w-3 h-3 rounded-full bg-slate-600/50"></div>
@@ -526,7 +528,7 @@ export function SimulationEditor() {
             <div className="p-4 h-64 overflow-y-auto font-mono text-[13px] leading-relaxed relative custom-scrollbar flex flex-col gap-1">
               {buildLogs.map((log, i) => (
                 <div key={i} className="flex gap-4">
-                  <span className="text-slate-500 shrink-0">{log.time}</span>
+                  <span className="text-slate-500 shrink-0 min-w-[70px]">{log.time}</span>
                   <span className={`${log.message.startsWith('✓') ? 'text-emerald-400' : log.message.startsWith('🚀') ? 'text-blue-400 font-bold' : 'text-slate-300'}`}>
                     {log.message}
                   </span>

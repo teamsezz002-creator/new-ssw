@@ -14,14 +14,24 @@ const app = express();
 const PORT = 3000;
 const upload = multer({ dest: os.tmpdir() });
 
-const buildJobs = new Map<string, { status: 'building' | 'completed' | 'error', message?: string, zipPath?: string }>();
+const buildJobs = new Map<string, { status: 'building' | 'completed' | 'error', message?: string, zipPath?: string, logs: string[] }>();
 
-function runCommand(command: string, args: string[], cwd: string): Promise<void> {
+// Modified runCommand to accept a log callback
+function runCommand(command: string, args: string[], cwd: string, logCallback: (message: string) => void): Promise<void> {
   return new Promise((resolve, reject) => {
-    console.log(`Running: ${command} ${args.join(' ')} in ${cwd}`);
-    const proc = spawn(command, args, { cwd, shell: true, env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=4096' } });
-    
-    proc.stdout.on('data', (data) => console.log(`[${command}] ${data.toString().trim()}`));
+    const fullCommand = `${command} ${args.join(' ')}`;
+    logCallback(`Running: ${fullCommand} in ${cwd}`);
+    const proc = spawn(command, args, {
+      cwd,
+      shell: true,
+      env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=4096' },
+      timeout: 300 * 1000 // 5 minutes timeout for each command
+    });
+
+    proc.stdout.on('data', (data) => {
+      const text = data.toString().trim();
+      if (text) logCallback(`[${command} STDOUT] ${text}`);
+    });
     proc.stderr.on('data', (data) => {
         const text = data.toString().trim();
         if (text) {
@@ -29,13 +39,27 @@ function runCommand(command: string, args: string[], cwd: string): Promise<void>
                console.log(`[${command} WARN] ${text}`);
            } else {
                console.error(`[${command} ERR] ${text}`);
+               logCallback(`[${command} STDERR] ${text}`);
            }
         }
     });
-    
+
     proc.on('close', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`Command ${command} exited with code ${code}`));
+      if (code === 0) {
+        logCallback(`Command "${fullCommand}" exited with code ${code}`);
+        resolve();
+      }
+      else {
+        const errorMessage = `Command "${fullCommand}" exited with code ${code}`;
+        logCallback(`[ERROR] ${errorMessage}`);
+        reject(new Error(errorMessage));
+      }
+    });
+
+    proc.on('error', (err) => {
+      const errorMessage = `Failed to start command "${fullCommand}": ${err.message}`;
+      logCallback(`[ERROR] ${errorMessage}`);
+      reject(new Error(errorMessage));
     });
   });
 }
@@ -43,7 +67,7 @@ function runCommand(command: string, args: string[], cwd: string): Promise<void>
 function findPackageJsonDir(dir: string): string | null {
   if (fs.existsSync(path.join(dir, 'package.json'))) return dir;
   for (const file of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (file.isDirectory() && !file.name.includes("node_modules") && !file.name.includes("__MACOSX")) {
+    if (file.isDirectory() && !file.name.includes("node_modules") && !file.name.includes("__MACOSX") && !file.name.includes(".git")) { // Added .git
       const found = findPackageJsonDir(path.join(dir, file.name));
       if (found) return found;
     }
@@ -149,14 +173,20 @@ async function startServer() {
         jobId = Math.random().toString(36).substring(2, 15);
     }
     
-    buildJobs.set(jobId, { status: 'building' });
+    // Initialize job with empty logs
+    buildJobs.set(jobId, { status: 'building', logs: [] });
     res.json({ jobId });
+
+    // Define a logging function for this job
+    const jobLog = (message: string) => {
+      const job = buildJobs.get(jobId);
+      if (job) job.logs.push(message);
+    };
 
     // Run build in background
     (async () => {
       try {
-        console.log(`Extracting uploaded ZIP to ${tempDir}...`);
-      
+        jobLog(`Extracting uploaded ZIP to ${tempDir}...`);
       const stats = fs.statSync(zipPath);
       console.log(`Uploaded file size: ${stats.size} bytes`);
       if (stats.size === 0) {
@@ -176,6 +206,7 @@ async function startServer() {
       try {
         const zip = new AdmZip(zipPath);
         zip.extractAllTo(tempDir, true);
+        jobLog("✓ ZIP extracted.");
       } catch (zipError: any) {
         throw new Error(`Failed to read ZIP file. It may be corrupted, in an unsupported format (like .rar), or use unsupported ZIP64 features. Original error: ${zipError.message}`);
       }
@@ -184,11 +215,13 @@ async function startServer() {
       if (!buildDir) {
         throw new Error("Could not find package.json in the uploaded ZIP.");
       }
+      jobLog(`Found package.json in ${buildDir}.`);
 
-      console.log(`Found package.json in ${buildDir}. Installing dependencies...`);
-      await runCommand("npm", ["install", "--legacy-peer-deps", "--no-audit", "--no-fund", "--loglevel=error"], buildDir);
+      jobLog(`Installing dependencies...`);
+      await runCommand("npm", ["install", "--legacy-peer-deps", "--no-audit", "--no-fund", "--loglevel=error"], buildDir, jobLog);
+      jobLog("✓ Dependencies installed.");
 
-      console.log(`Ensuring missing dependencies are installed (react-is)...`);
+      jobLog(`Ensuring missing dependencies are installed (react-is)...`);
       try {
           await runCommand("npm", ["install", "react-is", "--legacy-peer-deps", "--no-audit", "--no-fund", "--loglevel=error"], buildDir);
       } catch(e) {
@@ -196,7 +229,7 @@ async function startServer() {
       }
 
       console.log(`Applying Workbox filesize limit patches...`);
-      try {
+      try { // This block should also use jobLog
           const defaultsJs = path.join(buildDir, 'node_modules', 'workbox-build', 'build', 'options', 'defaults.js');
           if (fs.existsSync(defaultsJs)) {
               let content = fs.readFileSync(defaultsJs, 'utf8');
@@ -217,11 +250,11 @@ async function startServer() {
                   fs.writeFileSync(fullPath, content);
               }
           }
+          jobLog("✓ Workbox patches applied.");
       } catch(e) {
-          console.warn("Workbox patch failed:", e);
+          jobLog(`[WARN] Workbox patch failed: ${e}`);
       }
 
-      console.log(`Setting Vite base to relative...`);
       try {
           const pkgJsonPath = path.join(buildDir, 'package.json');
           if (fs.existsSync(pkgJsonPath)) {
@@ -239,10 +272,10 @@ async function startServer() {
                       fs.writeFileSync(pkgJsonPath, JSON.stringify(pkgJson, null, 2));
                   }
               }
-          }
-          
+          } // This block should also use jobLog
+
           // Also patch vite.config.* to have base if not present
-          const viteConfigs = ['vite.config.ts', 'vite.config.js', 'vite.config.mjs', 'vite.config.cjs'];
+          const viteConfigs = ['vite.config.ts', 'vite.config.js', 'vite.config.mjs', 'vite.config.cjs']; // This block should also use jobLog
           for (const conf of viteConfigs) {
               const confPath = path.join(buildDir, conf);
               if (fs.existsSync(confPath)) {
@@ -252,11 +285,11 @@ async function startServer() {
                      fs.writeFileSync(confPath, content);
                   }
               }
-          }
+          } jobLog("✓ Vite base set to relative.");
       } catch(e) {
-          console.warn("Failed to patch vite base", e);
+          jobLog(`[WARN] Failed to patch vite base: ${e}`);
       }
-
+      jobLog(`Setting Vite base to relative...`);
       console.log(`Building React app...`);
       await runCommand("npm", ["run", "build"], buildDir);
 
@@ -270,18 +303,19 @@ async function startServer() {
         throw new Error("No 'dist' or 'build' folder generated. Did the build script succeed?");
       }
 
-      console.log(`Build complete. Zipping ${finalDistDir}...`);
+      jobLog(`Build complete. Zipping ${finalDistDir}...`);
       const outZip = new AdmZip();
       outZip.addLocalFolder(finalDistDir);
       const buffer = outZip.toBuffer();
 
       const finalZipPath = path.join(os.tmpdir(), `build_out_${jobId}.zip`);
       fs.writeFileSync(finalZipPath, buffer);
-      
-      console.log(`Build job ${jobId} completed successfully.`);
-      buildJobs.set(jobId, { status: 'completed', zipPath: finalZipPath });
+      jobLog(`✓ Build output zipped to: ${finalZipPath}`);
+
+      jobLog(`Build job ${jobId} completed successfully.`);
+      buildJobs.set(jobId, { status: 'completed', zipPath: finalZipPath, logs: buildJobs.get(jobId)?.logs || [] });
     } catch (e: any) {
-      console.error(`Build failed for ${jobId}:`, e);
+      jobLog(`[ERROR] Build failed for ${jobId}: ${e}`);
       buildJobs.set(jobId, { status: 'error', message: e.message || String(e) });
     } finally {
       fs.rmSync(tempDir, { recursive: true, force: true });

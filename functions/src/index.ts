@@ -160,10 +160,230 @@ export const onSimulationUpload = functions.runWith({
   const extractDir = fs.mkdtempSync(path.join(os.tmpdir(), 'build-'));
   const simId = path.basename(filePath, '.zip');
 
-  const updateProgress = (step: string) => 
-    db.collection('simulations').doc(simId).update({ 
-        buildStep: step,
-        status: 'building',
+  // Helper to update Firestore build step and status
+  const updateBuildStatus = async (status: 'building' | 'completed' | 'error' | 'ready', buildStep?: string, errorMessage?: string) => {
+    const updateData: { status: string; buildStep?: string; errorMessage?: string; lastUpdated: admin.firestore.FieldValue } = {
+      status: status,
+      lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+    };
+    if (buildStep) updateData.buildStep = buildStep;
+    if (errorMessage) updateData.errorMessage = errorMessage;
+    await db.collection('simulations').doc(simId).update(updateData);
+  };
+
+  // Helper to add log messages to Firestore
+  const addBuildLog = async (message: string) => {
+    await db.collection('simulations').doc(simId).update({
+      buildLogs: admin.firestore.FieldValue.arrayUnion(`[${new Date().toISOString()}] ${message}`)
+    });
+  };
+
+  try {
+    await addBuildLog(`Cloud Build triggered for: ${simId}`);
+    await updateBuildStatus('building', "Cloud Engine is waking up...");
+
+    // 1. Download from Storage
+    await updateBuildStatus('building', "Downloading source files (ZIP)...");
+    await addBuildLog("Downloading source files (ZIP)...");
+    await bucket.file(filePath).download({ destination: tempZipPath });
+    await addBuildLog("✓ Source ZIP downloaded.");
+
+    // 2. Extract
+    await updateBuildStatus('building', "Extracting project...");
+    await addBuildLog("Extracting project...");
+    const zip = new AdmZip(tempZipPath);
+    zip.extractAllTo(extractDir, true);
+    await addBuildLog("✓ Project extracted.");
+
+    // 3. Find directory with package.json
+    const buildDir = findPackageJsonDir(extractDir);
+    if (!buildDir) {
+      throw new Error("Could not find package.json in the uploaded ZIP. Please ensure your project structure is correct.");
+    }
+    await addBuildLog(`Found package.json in: ${buildDir}`);
+
+    // 4. Run Build (spawn commands)
+    const runCmd = (command: string, args: string[]): Promise<void> => {
+      return new Promise((resolve, reject) => {
+        const fullCommand = `${command} ${args.join(' ')}`;
+        addBuildLog(`Running command: ${fullCommand} in ${buildDir}`);
+        const proc = spawn(command, args, {
+          cwd: buildDir,
+          shell: true,
+          env: {
+            ...process.env,
+            CI: 'true',
+            NODE_OPTIONS: '--max-old-space-size=3072', // 3GB
+            npm_config_cache: path.join(os.tmpdir(), '.npm')
+          },
+          timeout: 300 * 1000 // 5 minutes timeout for each command
+        });
+
+        proc.stdout.on('data', (data) => {
+          const text = data.toString().trim();
+          if (text) addBuildLog(`[${command} STDOUT] ${text}`);
+        });
+        proc.stderr.on('data', (data) => {
+          const text = data.toString().trim();
+          if (text) {
+            if (text.toLowerCase().includes('warn') || text.toLowerCase().includes('deprecated')) {
+              addBuildLog(`[${command} WARN] ${text}`);
+            } else {
+              addBuildLog(`[${command} STDERR] ${text}`);
+            }
+          }
+        });
+
+        proc.on('close', (code) => {
+          if (code === 0) {
+            addBuildLog(`Command "${fullCommand}" exited with code ${code}`);
+            resolve();
+          } else {
+            const errorMessage = `Command "${fullCommand}" exited with code ${code}`;
+            addBuildLog(`[ERROR] ${errorMessage}`);
+            reject(new Error(errorMessage));
+          }
+        });
+
+        proc.on('error', (err) => {
+          const errorMessage = `Failed to start command "${fullCommand}": ${err.message}`;
+          addBuildLog(`[ERROR] ${errorMessage}`);
+          reject(new Error(errorMessage));
+        });
+
+        proc.on('timeout', () => {
+            const errorMessage = `Command "${fullCommand}" timed out after ${proc.spawnargs.timeout / 1000} seconds.`;
+            addBuildLog(`[ERROR] ${errorMessage}`);
+            proc.kill(); // Ensure the process is killed
+            reject(new Error(errorMessage));
+        });
+      });
+    };
+
+    await updateBuildStatus('building', "Initializing build environment...");
+    await addBuildLog("Initializing build environment...");
+    
+    // Patching: Ensure build is optimized for hosting (Same as local server logic)
+    try {
+      await addBuildLog("Applying pre-build patches (Vite base, Workbox config)...");
+      const pkgJsonPath = path.join(buildDir, 'package.json');
+      if (fs.existsSync(pkgJsonPath)) {
+        let pkgContent = fs.readFileSync(pkgJsonPath, 'utf8');
+        const pkg = JSON.parse(pkgContent);
+        if (pkg.scripts && pkg.scripts.build && !pkg.scripts.build.includes('--base')) {
+          pkg.scripts.build = pkg.scripts.build.replace('vite build', 'vite build --base=./');
+          fs.writeFileSync(pkgJsonPath, JSON.stringify(pkg, null, 2));
+          await addBuildLog("Patched package.json build script with --base=./");
+        }
+      }
+
+      const viteConfigPaths = ['vite.config.js', 'vite.config.ts', 'vite.config.mjs', 'vite.config.cjs'];
+      let viteConfigFound = false;
+      for (const conf of viteConfigPaths) {
+          const fullPath = path.join(buildDir, conf);
+          if (fs.existsSync(fullPath)) {
+              viteConfigFound = true;
+              let content = fs.readFileSync(fullPath, 'utf8');
+              let originalContent = content;
+
+              // Patch base
+              if (!content.includes('base:')) {
+                 content = content.replace(/(defineConfig\(\{)/, '$1 base: "./",');
+                 await addBuildLog(`Patched ${conf} with base: "./"`);
+              }
+              
+              // Workbox patch for larger files
+              if (content.includes('VitePWA')) {
+                if (!content.includes('maximumFileSizeToCacheInBytes')) {
+                  content = content.replace(/(workbox:\s*\{)/, '$1 maximumFileSizeToCacheInBytes: 52428800, ');
+                  await addBuildLog(`Patched ${conf} Workbox config for larger files.`);
+                } else {
+                  content = content.replace(/maximumFileSizeToCacheInBytes:\s*\d+/g, 'maximumFileSizeToCacheInBytes: 52428800');
+                  await addBuildLog(`Updated ${conf} Workbox maximumFileSizeToCacheInBytes.`);
+                }
+              }
+
+              if (content !== originalContent) {
+                  fs.writeFileSync(fullPath, content);
+              }
+              break; // Only patch one vite config file
+          }
+      }
+      if (!viteConfigFound) {
+          await addBuildLog("No Vite config file found, skipping Vite-specific patches.");
+      }
+      await addBuildLog("✓ Pre-build patches applied.");
+    } catch (patchErr: any) {
+      // Report patching errors as critical, as they can lead to build failures
+      throw new Error(`Failed to apply pre-build patches: ${patchErr.message || String(patchErr)}`);
+    }
+
+    await updateBuildStatus('building', "Installing dependencies...");
+    await runCmd('npm', ['install', '--legacy-peer-deps', '--no-audit', '--no-fund', '--loglevel=error']);
+    await addBuildLog("✓ Dependencies installed.");
+    
+    await updateBuildStatus('building', "Building React application...");
+    await runCmd('npm', ['run', 'build']);
+    await addBuildLog("✓ React application built.");
+
+    // 5. Find output folder (Vite uses 'dist', CRA uses 'build')
+    await updateBuildStatus('building', "Zipping build artifacts...");
+    await addBuildLog("Zipping build artifacts...");
+    const distPathVite = path.join(buildDir, 'dist');
+    const distPathCRA = path.join(buildDir, 'build');
+    const finalDistPath = fs.existsSync(distPathVite) ? distPathVite : (fs.existsSync(distPathCRA) ? distPathCRA : null);
+
+    if (!finalDistPath) {
+      throw new Error("Build succeeded but no 'dist' or 'build' folder was found. Please check your build script output.");
+    }
+    await addBuildLog(`Found build output in: ${finalDistPath}`);
+
+    const outZip = new AdmZip();
+    outZip.addLocalFolder(finalDistPath);
+    const finalZipBuffer = outZip.toBuffer();
+    await addBuildLog("✓ Build artifacts zipped.");
+
+    // 6. Upload back to Storage
+    await updateBuildStatus('building', "Saving to cloud storage...");
+    await addBuildLog("Saving final build ZIP to Firebase Storage...");
+    const destination = `simulations/${simId}.zip`;
+    const file = bucket.file(destination);
+    await file.save(finalZipBuffer, { 
+      contentType: 'application/zip',
+      metadata: { cacheControl: 'public, max-age=31536000' }
+    });
+    await addBuildLog(`✓ Final build saved to: gs://${bucket.name}/${destination}`);
+
+    // 7. Update Firestore
+    await updateBuildStatus('ready', 'Completed'); // Use 'ready' status for success
+    await addBuildLog('🚀 Cloud build successful!');
+
+    // Clean up pending-builds zip
+    await bucket.file(filePath).delete();
+    await addBuildLog(`Cleaned up pending build file: ${filePath}`);
+
+  } catch (error: any) {
+    const errorMessage = error instanceof Error ? error.message : "Cloud build failed unexpectedly.";
+    await addBuildLog(`❌ Build failed: ${errorMessage}`);
+    console.error(`Cloud Build for ${simId} failed:`, error);
+    await updateBuildStatus('error', 'Failed', errorMessage);
+  } finally {
+    // Ensure all temporary files are cleaned up
+    try {
+      if (fs.existsSync(extractDir)) {
+        fs.rmSync(extractDir, { recursive: true, force: true });
+        await addBuildLog(`Cleaned up temporary extraction directory: ${extractDir}`);
+      }
+      if (fs.existsSync(tempZipPath)) {
+        fs.unlinkSync(tempZipPath);
+        await addBuildLog(`Cleaned up temporary ZIP file: ${tempZipPath}`);
+      }
+    } catch (cleanupError: any) {
+      await addBuildLog(`⚠️ Error during cleanup: ${cleanupError.message}`);
+      console.error(`Error during cleanup for ${simId}:`, cleanupError);
+    }
+  }
+});
         lastUpdated: admin.firestore.FieldValue.serverTimestamp()
     });
 
