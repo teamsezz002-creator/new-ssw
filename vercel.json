@@ -1,7 +1,16 @@
 {
   "version": 2,
   "framework": "vite",
+  "functions": {
+    "api/build-simulation.ts": {
+      "maxDuration": 300
+    }
+  },
   "rewrites": [
+    {
+      "source": "/api/(.*)",
+      "destination": "/api/$1"
+    },
     {
       "source": "/(.*)",
       "destination": "/index.html"

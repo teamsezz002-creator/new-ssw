@@ -2,11 +2,10 @@ import React, { useEffect, useRef, useState } from 'react';
 import { useNavigate, useParams } from 'react-router-dom';
 import { AnimatePresence, motion } from 'motion/react';
 import { CheckCircle2, ChevronLeft, FileArchive, Image as ImageIcon, Plus, Terminal, UploadCloud, X } from 'lucide-react';
-import { arrayUnion, doc, onSnapshot, setDoc } from 'firebase/firestore';
-import { signInAnonymously } from 'firebase/auth';
-import { getDownloadURL, ref, uploadBytes, uploadBytesResumable } from 'firebase/storage';
+import { doc, onSnapshot, setDoc } from 'firebase/firestore';
+import { getDownloadURL, ref, uploadBytes } from 'firebase/storage';
 import { simulations, saveSimulation } from '../data';
-import { db, storage, auth } from '../services/firebase';
+import { db, storage } from '../services/firebase';
 import { Simulation } from '../types';
 
 type BuildState = 'idle' | 'running' | 'success' | 'error';
@@ -25,6 +24,17 @@ function nowTime() {
 
 function mapFirestoreLogs(messages: string[] = []): LogEntry[] {
   return messages.map((message) => ({ time: nowTime(), message }));
+}
+
+function base64ToBytes(base64: string) {
+  const binary = atob(base64);
+  const bytes = new Uint8Array(binary.length);
+
+  for (let i = 0; i < binary.length; i += 1) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+
+  return bytes;
 }
 
 export function SimulationEditor() {
@@ -227,28 +237,20 @@ export function SimulationEditor() {
     return { finalThumbnail, finalHero, finalScreenshots };
   };
 
-  const uploadBuildZipDirectly = async (finalId: string) => {
-    if (!buildZipFile) return '';
+  const uploadBuildZipDirectly = async (finalId: string, zipFile?: Blob) => {
+    const fileToUpload = zipFile || buildZipFile;
+    if (!fileToUpload) return '';
 
     addLog('Uploading pre-built simulation ZIP...');
     const zipRef = ref(storage, `simulations/${finalId}.zip`);
-    await uploadBytes(zipRef, buildZipFile, { contentType: 'application/zip' });
+    await uploadBytes(zipRef, fileToUpload, { contentType: 'application/zip' });
     const downloadUrl = await getDownloadURL(zipRef);
     addLog('Build ZIP uploaded.');
     return downloadUrl;
   };
 
-  const uploadSourceZipForCloudBuild = async (finalId: string) => {
-    if (!sourceZipFile) return;
-
-    addLog('Authenticating...');
-    try {
-      await signInAnonymously(auth);
-      addLog('Authenticated anonymously.');
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      addLog(`Anonymous auth failed: ${message}. Upload will continue if Storage rules allow it.`);
-    }
+  const buildSourceZipOnVercel = async (finalId: string) => {
+    if (!sourceZipFile) return '';
 
     if (sourceZipFile.size > 30 * 1024 * 1024) {
       throw new Error(
@@ -256,38 +258,32 @@ export function SimulationEditor() {
       );
     }
 
-    await setDoc(
-      doc(db, 'simulations', finalId),
-      {
-        ...formData,
-        id: finalId,
-        status: 'building',
-        sourceType: 'uploaded',
-        timestamp: Date.now(),
-        buildLogs: arrayUnion(`[${new Date().toISOString()}] Preparing Cloud Build environment...`),
-      },
-      { merge: true },
-    );
+    addLog('Sending source ZIP to Vercel builder...');
+    const form = new FormData();
+    form.append('zipFile', sourceZipFile);
 
-    addLog('Uploading source ZIP for cloud build...');
-    const pendingRef = ref(storage, `pending-builds/${finalId}.zip`);
-    const uploadTask = uploadBytesResumable(pendingRef, sourceZipFile, { contentType: 'application/zip' });
-
-    await new Promise<void>((resolve, reject) => {
-      uploadTask.on(
-        'state_changed',
-        (snapshot) => {
-          const progress = Math.round((snapshot.bytesTransferred / snapshot.totalBytes) * 100);
-          if (progress > 0 && progress % 10 === 0) {
-            addLog(`Uploading source: ${progress}%`);
-          }
-        },
-        reject,
-        () => resolve(),
-      );
+    const response = await fetch('/api/build-simulation', {
+      method: 'POST',
+      body: form,
     });
 
-    addLog('Source ZIP uploaded. Cloud builder should start automatically.');
+    const payload = await response.json();
+    if (!response.ok) {
+      throw new Error(payload?.error || 'Source ZIP build failed.');
+    }
+
+    if (Array.isArray(payload.logs)) {
+      payload.logs.forEach((message: string) => addLog(message));
+    }
+
+    if (!payload.zipBase64) {
+      throw new Error('Builder did not return a compiled ZIP.');
+    }
+
+    const builtZipBytes = base64ToBytes(payload.zipBase64);
+    const builtZipBlob = new Blob([builtZipBytes], { type: 'application/zip' });
+    addLog('Source ZIP built successfully on Vercel.');
+    return uploadBuildZipDirectly(finalId, builtZipBlob);
   };
 
   const simulateBuildProcess = async () => {
@@ -307,7 +303,7 @@ export function SimulationEditor() {
       if (buildZipFile) {
         storageUrl = await uploadBuildZipDirectly(finalId);
       } else if (sourceZipFile) {
-        await uploadSourceZipForCloudBuild(finalId);
+        storageUrl = await buildSourceZipOnVercel(finalId);
       } else {
         addLog('No ZIP file provided, skipping ZIP upload.');
       }
@@ -335,7 +331,7 @@ export function SimulationEditor() {
       await setDoc(doc(db, 'simulations', finalId), finalSim, { merge: true });
       addLog('Simulation metadata saved.');
 
-      if (buildZipFile) {
+      if (buildZipFile || sourceZipFile) {
         await setDoc(
           doc(db, 'simulations', finalId),
           { status: 'ready', buildStep: 'Completed', storageUrl, sourceType: 'uploaded' },
@@ -354,15 +350,14 @@ export function SimulationEditor() {
       addLog(`Build or upload failed: ${message}`);
       setBuildStatus('error');
       setBuildErrorMessage(message);
-      await setDoc(
-        doc(db, 'simulations', finalId),
-        {
-          status: 'error',
-          errorMessage: message,
-          buildLogs: arrayUnion(`[${new Date().toISOString()}] ${message}`),
-        },
-        { merge: true },
-      );
+        await setDoc(
+          doc(db, 'simulations', finalId),
+          {
+            status: 'error',
+            errorMessage: message,
+          },
+          { merge: true },
+        );
     }
   };
 

@@ -9,3 +9,4 @@ firebase-debug.log*
 functions/node_modules/
 functions/lib/
 firebase-applet-config.json
+.vercel
