@@ -149,7 +149,7 @@ function findPackageJsonDir(dir: string): string | null {
  * Memory and Timeout must be increased in Firebase Console for this.
  */
 export const onSimulationUpload = functions.runWith({
-  memory: '2GB',
+  memory: '4GB',
   timeoutSeconds: 540 // 9 minutes
 }).storage.object().onFinalize(async (object) => {
   const filePath = object.name; // e.g., 'pending-builds/sim_123.zip'

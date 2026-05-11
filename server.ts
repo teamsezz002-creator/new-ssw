@@ -19,7 +19,7 @@ const buildJobs = new Map<string, { status: 'building' | 'completed' | 'error', 
 function runCommand(command: string, args: string[], cwd: string): Promise<void> {
   return new Promise((resolve, reject) => {
     console.log(`Running: ${command} ${args.join(' ')} in ${cwd}`);
-    const proc = spawn(command, args, { cwd, shell: true, env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=1024' } });
+    const proc = spawn(command, args, { cwd, shell: true, env: { ...process.env, NODE_OPTIONS: '--max-old-space-size=4096' } });
     
     proc.stdout.on('data', (data) => console.log(`[${command}] ${data.toString().trim()}`));
     proc.stderr.on('data', (data) => {
