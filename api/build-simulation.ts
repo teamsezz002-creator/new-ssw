@@ -102,6 +102,16 @@ function patchBuildFiles(buildDir: string, logs: string[]) {
       content = content.replace(/defineConfig\(\s*\{/, 'defineConfig({ base: "./",');
     }
 
+    if (content.includes('maxParallelFileOps')) {
+      content = content.replace(/maxParallelFileOps:\s*\d+/g, 'maxParallelFileOps: 32');
+    } else if (content.includes('return {')) {
+      content = content.replace(/return\s*\{/, 'return { build: { rollupOptions: { maxParallelFileOps: 32 } },');
+    } else if (content.includes('defineConfig({')) {
+      content = content.replace(/defineConfig\(\s*\{/, 'defineConfig({ build: { rollupOptions: { maxParallelFileOps: 32 } },');
+    } else if (content.includes('export default {')) {
+      content = content.replace(/export default\s*\{/, 'export default { build: { rollupOptions: { maxParallelFileOps: 32 } },');
+    }
+
     if (content.includes('VitePWA')) {
       if (!content.includes('maximumFileSizeToCacheInBytes')) {
         content = content.replace(/workbox:\s*\{/, 'workbox: { maximumFileSizeToCacheInBytes: 52428800,');
@@ -112,7 +122,7 @@ function patchBuildFiles(buildDir: string, logs: string[]) {
 
     if (content !== original) {
       fs.writeFileSync(configPath, content);
-      addLog(logs, `Patched ${configName}.`);
+      addLog(logs, `Patched ${configName} for relative assets / reduced parallel file opens.`);
     }
     break;
   }
