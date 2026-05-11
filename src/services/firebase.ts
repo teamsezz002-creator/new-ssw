@@ -4,7 +4,7 @@ import { getFirestore } from 'firebase/firestore';
 import { getStorage } from 'firebase/storage';
 
 // JSON ફાઇલ ન મળે તો Environment Variables વાપરો (Vercel માટે)
-const config = {
+const config: any = {
   apiKey: import.meta.env.VITE_FIREBASE_API_KEY,
   authDomain: import.meta.env.VITE_FIREBASE_AUTH_DOMAIN,
   projectId: import.meta.env.VITE_FIREBASE_PROJECT_ID,
@@ -12,6 +12,14 @@ const config = {
   messagingSenderId: import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID,
   appId: import.meta.env.VITE_FIREBASE_APP_ID
 };
+
+// જો કોઈ પણ કી ખૂટતી હોય તો કોન્સોલમાં વોર્નિંગ આપો
+const missingKeys = Object.keys(config).filter(key => !config[key]);
+if (missingKeys.length > 0) {
+  console.error(`Firebase configuration error: Missing keys [${missingKeys.join(', ')}]. Check Vercel Environment Variables.`);
+  // Firebase ને ખાલી ઓબ્જેક્ટ આપવાથી એરર આવશે, પણ આપણે તેને રોકવા માટે ડિફોલ્ટ આપીએ
+  if (!config.apiKey) config.apiKey = "invalid_key_check_vercel";
+}
 
 const app = initializeApp(config);
 

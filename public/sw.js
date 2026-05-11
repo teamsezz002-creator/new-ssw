@@ -1,3 +1,4 @@
+// Service Worker to serve virtual simulation files from Cache API
 self.addEventListener('install', (event) => {
   self.skipWaiting();
 });
@@ -7,7 +8,9 @@ self.addEventListener('activate', (event) => {
     caches.keys().then((cacheNames) => {
       return Promise.all(
         cacheNames.map((cacheName) => {
-          return caches.delete(cacheName);
+          if (cacheName !== 'zip-host') {
+            return caches.delete(cacheName);
+          }
         })
       );
     }).then(() => {
@@ -18,12 +21,12 @@ self.addEventListener('activate', (event) => {
 
 self.addEventListener('fetch', (event) => {
   const url = new URL(event.request.url);
-  // We used to intercept /virtual-games/ here for client-side zips.
-  // Now it's hosted by the server. We just let the network handle it.
   if (url.pathname.startsWith('/virtual-games/')) {
     event.respondWith(
-      fetch(event.request).catch(() => {
-        return new Response("Virtual File Not Found on Server.", { status: 404 });
+      caches.open('zip-host').then((cache) => {
+        return cache.match(event.request).then((response) => {
+          return response || fetch(event.request);
+        });
       })
     );
   }
