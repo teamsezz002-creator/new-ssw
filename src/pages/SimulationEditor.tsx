@@ -37,6 +37,8 @@ function base64ToBytes(base64: string) {
   return bytes;
 }
 
+const RENDER_BACKEND_URL = "https://simulation-builder.onrender.com"; // Render માંથી મળેલી લિંક અહીં મુકો
+
 export function SimulationEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -249,41 +251,27 @@ export function SimulationEditor() {
     return downloadUrl;
   };
 
-  const buildSourceZipOnVercel = async (finalId: string) => {
+  const buildSourceZipOnRender = async (finalId: string) => {
     if (!sourceZipFile) return '';
 
-    if (sourceZipFile.size > 30 * 1024 * 1024) {
+    if (sourceZipFile.size > 50 * 1024 * 1024) {
       throw new Error(
-        `The uploaded ZIP file is too large (${(sourceZipFile.size / 1024 / 1024).toFixed(1)}MB). Remove node_modules and dist/build before zipping. Maximum allowed size is 30MB.`,
+        `The uploaded ZIP file is too large. Maximum allowed size is 50MB.`,
       );
     }
 
-    addLog('Sending source ZIP to Vercel builder...');
+    addLog('Sending source ZIP to Render cloud builder...');
     const form = new FormData();
     form.append('zipFile', sourceZipFile);
+    form.append('simId', finalId);
 
-    const response = await fetch('/api/build-simulation', {
+    await fetch(`${RENDER_BACKEND_URL}/build`, {
       method: 'POST',
       body: form,
     });
-
-    const payload = await response.json();
-    if (Array.isArray(payload?.logs)) {
-      payload.logs.forEach((message: string) => addLog(message));
-    }
-
-    if (!response.ok) {
-      throw new Error(payload?.error || 'Source ZIP build failed.');
-    }
-
-    if (!payload.zipBase64) {
-      throw new Error('Builder did not return a compiled ZIP.');
-    }
-
-    const builtZipBytes = base64ToBytes(payload.zipBase64);
-    const builtZipBlob = new Blob([builtZipBytes], { type: 'application/zip' });
-    addLog('Source ZIP built successfully on Vercel.');
-    return uploadBuildZipDirectly(finalId, builtZipBlob);
+    
+    addLog('Build request sent to Render. Monitoring progress...');
+    return ''; // URL will be updated by Backend in Firestore
   };
 
   const simulateBuildProcess = async () => {
@@ -303,7 +291,8 @@ export function SimulationEditor() {
       if (buildZipFile) {
         storageUrl = await uploadBuildZipDirectly(finalId);
       } else if (sourceZipFile) {
-        storageUrl = await buildSourceZipOnVercel(finalId);
+        await buildSourceZipOnRender(finalId);
+        // We set building status, onSnapshot will handle the rest
       } else {
         addLog('No ZIP file provided, skipping ZIP upload.');
       }
@@ -331,7 +320,7 @@ export function SimulationEditor() {
       await setDoc(doc(db, 'simulations', finalId), finalSim, { merge: true });
       addLog('Simulation metadata saved.');
 
-      if (buildZipFile || sourceZipFile) {
+      if (buildZipFile) {
         await setDoc(
           doc(db, 'simulations', finalId),
           { status: 'ready', buildStep: 'Completed', storageUrl, sourceType: 'uploaded' },
@@ -339,6 +328,12 @@ export function SimulationEditor() {
         );
         setBuildStatus('success');
         setTimeout(() => navigate('/studio'), 1200);
+      } else if (sourceZipFile) {
+         await setDoc(
+          doc(db, 'simulations', finalId),
+          { status: 'building', buildStep: 'Starting Render Build...', sourceType: 'uploaded' },
+          { merge: true }
+        );
       }
 
       if (!buildZipFile && !sourceZipFile) {
