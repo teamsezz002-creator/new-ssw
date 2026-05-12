@@ -64,6 +64,7 @@ export function SimulationEditor() {
   const [buildStatus, setBuildStatus] = useState<BuildState>('idle');
   const [buildErrorMessage, setBuildErrorMessage] = useState<string | null>(null);
   const [buildLogs, setBuildLogs] = useState<LogEntry[]>([]);
+  const buildWatchdogRef = useRef<number | null>(null);
   const [imageFiles, setImageFiles] = useState<{
     thumbnail: File | null;
     heroImage: File | null;
@@ -88,6 +89,14 @@ export function SimulationEditor() {
   }, [buildLogs, buildStatus]);
 
   useEffect(() => {
+    return () => {
+      if (buildWatchdogRef.current) {
+        window.clearTimeout(buildWatchdogRef.current);
+      }
+    };
+  }, []);
+
+  useEffect(() => {
     if (!jobId) return;
 
     unsubscribeRef.current?.();
@@ -104,6 +113,10 @@ export function SimulationEditor() {
         }
 
         if (data.status === 'ready') {
+          if (buildWatchdogRef.current) {
+            window.clearTimeout(buildWatchdogRef.current);
+            buildWatchdogRef.current = null;
+          }
           setBuildStatus('success');
           setBuildErrorMessage(null);
           saveSimulation({
@@ -118,6 +131,10 @@ export function SimulationEditor() {
         }
 
         if (data.status === 'error') {
+          if (buildWatchdogRef.current) {
+            window.clearTimeout(buildWatchdogRef.current);
+            buildWatchdogRef.current = null;
+          }
           setBuildStatus('error');
           setBuildErrorMessage(data.errorMessage || 'Unknown build error.');
           return;
@@ -262,6 +279,26 @@ export function SimulationEditor() {
     const queueRef = ref(storage, `pending-builds/${finalId}.zip`);
     await uploadBytes(queueRef, sourceZipFile, { contentType: 'application/zip' });
     addLog('Source ZIP queued. Firebase cloud build will start automatically.');
+
+    if (buildWatchdogRef.current) {
+      window.clearTimeout(buildWatchdogRef.current);
+    }
+    buildWatchdogRef.current = window.setTimeout(async () => {
+      const timeoutMessage = 'Build queue accepted the ZIP, but no backend builder picked it up. Firebase build function is likely not deployed or lacks permission in the data project.';
+      addLog(timeoutMessage);
+      setBuildStatus('error');
+      setBuildErrorMessage(timeoutMessage);
+      await setDoc(
+        doc(db, 'simulations', finalId),
+        {
+          status: 'error',
+          errorMessage: timeoutMessage,
+          buildStep: 'Backend builder not responding',
+        },
+        { merge: true },
+      );
+    }, 90000);
+
     return '';
   };
 

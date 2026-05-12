@@ -32,6 +32,8 @@ const AuthContext = createContext<AuthContextType>({
 
 export const useAuth = () => useContext(AuthContext);
 
+const AUTH_STORAGE_KEY = 'currentUser';
+
 const testConnection = async () => {
   try {
     const timeout = new Promise((_, reject) =>
@@ -89,7 +91,11 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
 
-      const saved = localStorage.getItem('currentUser');
+      const legacySaved = localStorage.getItem(AUTH_STORAGE_KEY);
+      if (legacySaved) {
+        localStorage.removeItem(AUTH_STORAGE_KEY);
+      }
+      const saved = sessionStorage.getItem(AUTH_STORAGE_KEY);
       if (saved) {
         try {
           const parsed = JSON.parse(saved);
@@ -109,15 +115,15 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
             if (isExpired) {
               alert('Your account or organization has expired. Please contact support.');
-              localStorage.removeItem('currentUser');
+              sessionStorage.removeItem(AUTH_STORAGE_KEY);
             } else {
               setUser(data);
             }
           } else {
-            localStorage.removeItem('currentUser');
+            sessionStorage.removeItem(AUTH_STORAGE_KEY);
           }
         } catch {
-          localStorage.removeItem('currentUser');
+          sessionStorage.removeItem(AUTH_STORAGE_KEY);
         }
       }
 
@@ -151,7 +157,7 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           }
           setUser(u);
-          localStorage.setItem('currentUser', JSON.stringify(u));
+          sessionStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(u));
           return true;
         }
       }
@@ -164,7 +170,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = () => {
     setUser(null);
-    localStorage.removeItem('currentUser');
+    sessionStorage.removeItem(AUTH_STORAGE_KEY);
+    localStorage.removeItem(AUTH_STORAGE_KEY);
   };
 
   return (
