@@ -32,10 +32,6 @@ export const useAuth = () => useContext(AuthContext);
 
 const testConnection = async () => {
     const apiKey = import.meta.env.VITE_FIREBASE_API_KEY;
-    if (!apiKey || apiKey === "YOUR_API_KEY" || apiKey === "missing" || apiKey === "undefined") {
-        throw new Error("Firebase configuration is missing. Please set Environment Variables in Vercel and REDEPLOY your site.");
-    }
-
     try {
         // 5 સેકન્ડનો ટાઈમઆઉટ આપો જેથી એપ્લિકેશન લટકતી ન રહે
         const timeout = new Promise((_, reject) => 

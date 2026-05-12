@@ -26,11 +26,12 @@ if (getApps().length === 0) {
   }
 
   try {
+    const credentials = JSON.parse(serviceAccountJson);
     initializeApp({
-      credential: cert(JSON.parse(serviceAccountJson)),
+      credential: cert(credentials),
       storageBucket: storageBucket
     });
-    console.log("Firebase Admin SDK initialized successfully.");
+    console.log(`Firebase Admin initialized for project: ${credentials.project_id}`);
   } catch (error) {
     console.error("Error initializing Firebase Admin SDK:", error);
     process.exit(1); // Exit if initialization fails
