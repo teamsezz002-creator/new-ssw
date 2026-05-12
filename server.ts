@@ -10,11 +10,31 @@ import * as admin from 'firebase-admin';
 import { randomUUID } from 'crypto';
 
 // Firebase Admin Setup (Render ના Environment Variables માંથી લેશે)
-if (!admin.apps.length) {
-  admin.initializeApp({
-    credential: admin.credential.cert(JSON.parse(process.env.FIREBASE_SERVICE_ACCOUNT!)),
-    storageBucket: process.env.FIREBASE_STORAGE_BUCKET
-  });
+if (!admin.apps || admin.apps.length === 0) {
+  const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
+  const storageBucket = process.env.FIREBASE_STORAGE_BUCKET;
+
+  if (!serviceAccountJson) {
+    console.error("Error: FIREBASE_SERVICE_ACCOUNT environment variable is not set.");
+    process.exit(1); // Exit if critical environment variable is missing
+  }
+  if (!storageBucket) {
+    console.error("Error: FIREBASE_STORAGE_BUCKET environment variable is not set.");
+    process.exit(1); // Exit if critical environment variable is missing
+  }
+
+  try {
+    admin.initializeApp({
+      credential: admin.credential.cert(JSON.parse(serviceAccountJson)),
+      storageBucket: storageBucket
+    });
+    console.log("Firebase Admin SDK initialized successfully.");
+  } catch (error) {
+    console.error("Error initializing Firebase Admin SDK:", error);
+    process.exit(1); // Exit if initialization fails
+  }
+} else {
+  console.log("Firebase Admin SDK already initialized.");
 }
 
 const db = admin.firestore();
