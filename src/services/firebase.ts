@@ -18,9 +18,8 @@ const missingKeys = Object.entries(config)
   .filter(([_, value]) => !value || value === "missing" || value === "undefined")
   .map(([key]) => `VITE_FIREBASE_${key.replace(/[A-Z]/g, letter => `_${letter}`).toUpperCase()}`);
 
-if (missingKeys.length > 0 && import.meta.env.PROD) {
-  console.error("CRITICAL: Missing Vercel Environment Variables:", missingKeys);
-  if (!config.apiKey) config.apiKey = "invalid_key_check_vercel";
+if (missingKeys.length > 0) {
+  console.error("CRITICAL: Firebase configuration is missing for:", missingKeys.join(", "));
 }
 
 const app = initializeApp(config);
