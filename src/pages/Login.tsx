@@ -4,7 +4,7 @@ import { motion } from 'motion/react';
 import { Hexagon, Lock, User, Loader2 } from 'lucide-react';
 
 export function Login() {
-  const { login } = useAuth();
+  const { login, authError } = useAuth();
   const [id, setId] = useState('');
   const [pass, setPass] = useState('');
   const [error, setError] = useState('');
@@ -71,7 +71,7 @@ export function Login() {
             </div>
           </div>
 
-          {error && <div className="text-red-500 text-sm font-semibold">{error}</div>}
+          {(error || authError) && <div className="text-red-500 text-sm font-semibold">{error || authError}</div>}
 
           <button 
             type="submit" 
