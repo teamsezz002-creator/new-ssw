@@ -17,6 +17,7 @@ const runtimeConfig = window.__SEZ_FIREBASE_CONFIG__ ?? {};
 const config: FirebaseRuntimeConfig = {
   apiKey: runtimeConfig.apiKey?.trim() || import.meta.env.VITE_FIREBASE_API_KEY?.trim(),
   authDomain: runtimeConfig.authDomain?.trim() || import.meta.env.VITE_FIREBASE_AUTH_DOMAIN?.trim(),
+  
   projectId: runtimeConfig.projectId?.trim() || import.meta.env.VITE_FIREBASE_PROJECT_ID?.trim(),
   storageBucket: runtimeConfig.storageBucket?.trim() || import.meta.env.VITE_FIREBASE_STORAGE_BUCKET?.trim(),
   messagingSenderId: runtimeConfig.messagingSenderId?.trim() || import.meta.env.VITE_FIREBASE_MESSAGING_SENDER_ID?.trim(),

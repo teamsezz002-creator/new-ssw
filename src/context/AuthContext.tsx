@@ -32,8 +32,6 @@ const AuthContext = createContext<AuthContextType>({
 
 export const useAuth = () => useContext(AuthContext);
 
-const AUTH_STORAGE_KEY = 'currentUser';
-
 const testConnection = async () => {
   try {
     const timeout = new Promise((_, reject) =>
@@ -91,41 +89,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
         return;
       }
 
-      const legacySaved = localStorage.getItem(AUTH_STORAGE_KEY);
-      if (legacySaved) {
-        localStorage.removeItem(AUTH_STORAGE_KEY);
-      }
-      const saved = sessionStorage.getItem(AUTH_STORAGE_KEY);
-      if (saved) {
-        try {
-          const parsed = JSON.parse(saved);
-          const uDoc = await getDoc(doc(db, 'users', parsed.id));
-          if (uDoc.exists()) {
-            const data = uDoc.data() as User;
-            let isExpired = false;
-
-            if (data.expiryDate && data.expiryDate < Date.now()) {
-              isExpired = true;
-            } else if (data.organizationId) {
-              const orgDoc = await getDoc(doc(db, 'users', data.organizationId));
-              if (orgDoc.exists() && orgDoc.data()?.expiryDate && orgDoc.data().expiryDate < Date.now()) {
-                isExpired = true;
-              }
-            }
-
-            if (isExpired) {
-              alert('Your account or organization has expired. Please contact support.');
-              sessionStorage.removeItem(AUTH_STORAGE_KEY);
-            } else {
-              setUser(data);
-            }
-          } else {
-            sessionStorage.removeItem(AUTH_STORAGE_KEY);
-          }
-        } catch {
-          sessionStorage.removeItem(AUTH_STORAGE_KEY);
-        }
-      }
+      localStorage.removeItem('currentUser');
+      sessionStorage.removeItem('currentUser');
 
       setLoading(false);
     };
@@ -157,7 +122,6 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
             }
           }
           setUser(u);
-          sessionStorage.setItem(AUTH_STORAGE_KEY, JSON.stringify(u));
           return true;
         }
       }
@@ -170,8 +134,8 @@ export const AuthProvider: React.FC<{ children: React.ReactNode }> = ({ children
 
   const logout = () => {
     setUser(null);
-    sessionStorage.removeItem(AUTH_STORAGE_KEY);
-    localStorage.removeItem(AUTH_STORAGE_KEY);
+    sessionStorage.removeItem('currentUser');
+    localStorage.removeItem('currentUser');
   };
 
   return (

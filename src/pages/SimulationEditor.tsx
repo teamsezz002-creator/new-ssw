@@ -12,6 +12,19 @@ type BuildState = 'idle' | 'running' | 'success' | 'error';
 type LogEntry = { time: string; message: string };
 type UploadKind = 'sourceFileName' | 'buildFileName';
 
+function isBlobUrl(value?: string) {
+  return typeof value === 'string' && value.startsWith('blob:');
+}
+
+function sanitizeAssetUrl(value?: string) {
+  if (!value || isBlobUrl(value)) return '';
+  return value;
+}
+
+function sanitizeAssetUrls(values: string[] = []) {
+  return values.filter((value) => value && !isBlobUrl(value));
+}
+
 function nowTime() {
   return new Date().toLocaleTimeString([], {
     hour12: false,
@@ -218,9 +231,9 @@ export function SimulationEditor() {
   };
 
   const uploadImages = async (finalId: string) => {
-    let finalThumbnail = formData.thumbnail;
-    let finalHero = formData.heroImage;
-    let finalScreenshots = [...(formData.screenshots || [])];
+    let finalThumbnail = sanitizeAssetUrl(formData.thumbnail);
+    let finalHero = sanitizeAssetUrl(formData.heroImage);
+    let finalScreenshots = sanitizeAssetUrls(formData.screenshots || []);
 
     addLog('Uploading images to Firebase Storage...');
 
