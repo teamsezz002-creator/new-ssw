@@ -37,8 +37,6 @@ function base64ToBytes(base64: string) {
   return bytes;
 }
 
-const RENDER_BACKEND_URL = "https://simulation-builder.onrender.com"; // Render માંથી મળેલી લિંક અહીં મુકો
-
 export function SimulationEditor() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -251,7 +249,7 @@ export function SimulationEditor() {
     return downloadUrl;
   };
 
-  const buildSourceZipOnRender = async (finalId: string) => {
+  const queueSourceZipBuild = async (finalId: string) => {
     if (!sourceZipFile) return '';
 
     if (sourceZipFile.size > 50 * 1024 * 1024) {
@@ -260,18 +258,11 @@ export function SimulationEditor() {
       );
     }
 
-    addLog('Sending source ZIP to Render cloud builder...');
-    const form = new FormData();
-    form.append('zipFile', sourceZipFile);
-    form.append('simId', finalId);
-
-    await fetch(`${RENDER_BACKEND_URL}/build`, {
-      method: 'POST',
-      body: form,
-    });
-    
-    addLog('Build request sent to Render. Monitoring progress...');
-    return ''; // URL will be updated by Backend in Firestore
+    addLog('Uploading source ZIP to Firebase build queue...');
+    const queueRef = ref(storage, `pending-builds/${finalId}.zip`);
+    await uploadBytes(queueRef, sourceZipFile, { contentType: 'application/zip' });
+    addLog('Source ZIP queued. Firebase cloud build will start automatically.');
+    return '';
   };
 
   const simulateBuildProcess = async () => {
@@ -291,8 +282,12 @@ export function SimulationEditor() {
       if (buildZipFile) {
         storageUrl = await uploadBuildZipDirectly(finalId);
       } else if (sourceZipFile) {
-        await buildSourceZipOnRender(finalId);
-        // We set building status, onSnapshot will handle the rest
+        await setDoc(
+          doc(db, 'simulations', finalId),
+          { status: 'building', buildStep: 'Uploading source ZIP to build queue...', sourceType: 'uploaded' },
+          { merge: true },
+        );
+        await queueSourceZipBuild(finalId);
       } else {
         addLog('No ZIP file provided, skipping ZIP upload.');
       }
@@ -329,9 +324,9 @@ export function SimulationEditor() {
         setBuildStatus('success');
         setTimeout(() => navigate('/studio'), 1200);
       } else if (sourceZipFile) {
-         await setDoc(
+        await setDoc(
           doc(db, 'simulations', finalId),
-          { status: 'building', buildStep: 'Starting Render Build...', sourceType: 'uploaded' },
+          { status: 'building', buildStep: 'Waiting for Firebase cloud build...', sourceType: 'uploaded' },
           { merge: true }
         );
       }
