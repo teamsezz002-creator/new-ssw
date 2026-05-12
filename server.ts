@@ -6,11 +6,13 @@ import fs from 'fs';
 import os from 'os';
 import path from 'path';
 import { spawn } from 'child_process';
-import * as admin from 'firebase-admin';
+import { initializeApp, cert, getApps } from 'firebase-admin/app';
+import { getFirestore, FieldValue } from 'firebase-admin/firestore';
+import { getStorage } from 'firebase-admin/storage';
 import { randomUUID } from 'crypto';
 
 // Firebase Admin Setup (Render ના Environment Variables માંથી લેશે)
-if (!admin.apps || admin.apps.length === 0) {
+if (getApps().length === 0) {
   const serviceAccountJson = process.env.FIREBASE_SERVICE_ACCOUNT;
   const storageBucket = process.env.FIREBASE_STORAGE_BUCKET;
 
@@ -24,8 +26,8 @@ if (!admin.apps || admin.apps.length === 0) {
   }
 
   try {
-    admin.initializeApp({
-      credential: admin.credential.cert(JSON.parse(serviceAccountJson)),
+    initializeApp({
+      credential: cert(JSON.parse(serviceAccountJson)),
       storageBucket: storageBucket
     });
     console.log("Firebase Admin SDK initialized successfully.");
@@ -37,8 +39,8 @@ if (!admin.apps || admin.apps.length === 0) {
   console.log("Firebase Admin SDK already initialized.");
 }
 
-const db = admin.firestore();
-const bucket = admin.storage().bucket();
+const db = getFirestore();
+const bucket = getStorage().bucket();
 const app = express();
 const upload = multer({ limits: { fileSize: 50 * 1024 * 1024 } }); // 50MB Limit
 
@@ -59,8 +61,8 @@ function findPackageJsonDir(dir: string): string | null {
 async function addBuildLog(simId: string, message: string) {
   console.log(`[${simId}] ${message}`);
   await db.collection('simulations').doc(simId).set({
-    buildLogs: admin.firestore.FieldValue.arrayUnion(`[${new Date().toLocaleTimeString()}] ${message}`),
-    lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+    buildLogs: FieldValue.arrayUnion(`[${new Date().toLocaleTimeString()}] ${message}`),
+    lastUpdated: FieldValue.serverTimestamp()
   }, { merge: true });
 }
 
@@ -69,7 +71,7 @@ async function updateStatus(simId: string, status: string, step: string, extra =
     status,
     buildStep: step,
     ...extra,
-    lastUpdated: admin.firestore.FieldValue.serverTimestamp()
+    lastUpdated: FieldValue.serverTimestamp()
   }, { merge: true });
 }
 
@@ -99,14 +101,27 @@ app.post('/build', upload.single('zipFile'), async (req, res) => {
     const buildDir = findPackageJsonDir(extractDir);
     if (!buildDir) throw new Error('package.json not found in ZIP');
 
-    // Patch for Relative Paths (Crucial for IFrames)
-    const viteConfigPath = path.join(buildDir, 'vite.config.ts');
-    if (fs.existsSync(viteConfigPath)) {
-      let content = fs.readFileSync(viteConfigPath, 'utf8');
-      if (!content.includes('base:')) {
-        content = content.replace(/defineConfig\(\s*\{/, 'defineConfig({ base: "./",');
-        fs.writeFileSync(viteConfigPath, content);
-        await addBuildLog(simId, 'Patched vite.config.ts for relative paths.');
+    // Robust Patching for Relative Paths & Build Scripts
+    const pkgJsonPath = path.join(buildDir, 'package.json');
+    if (fs.existsSync(pkgJsonPath)) {
+      const pkg = JSON.parse(fs.readFileSync(pkgJsonPath, 'utf8'));
+      if (pkg.scripts?.build && pkg.scripts.build.includes('vite build') && !pkg.scripts.build.includes('--base')) {
+        pkg.scripts.build = pkg.scripts.build.replace('vite build', 'vite build --base=./');
+        fs.writeFileSync(pkgJsonPath, JSON.stringify(pkg, null, 2));
+        await addBuildLog(simId, 'Patched package.json build script.');
+      }
+    }
+
+    for (const configName of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs', 'vite.config.cjs']) {
+      const configPath = path.join(buildDir, configName);
+      if (fs.existsSync(configPath)) {
+        let content = fs.readFileSync(configPath, 'utf8');
+        if (!content.includes('base:')) {
+          content = content.replace(/defineConfig\(\s*\{/, 'defineConfig({ base: "./",');
+          fs.writeFileSync(configPath, content);
+          await addBuildLog(simId, `Patched ${configName} for relative paths.`);
+        }
+        break;
       }
     }
 
@@ -116,7 +131,16 @@ app.post('/build', upload.single('zipFile'), async (req, res) => {
 
     // 2. Run Build
     await updateStatus(simId, 'building', 'Building simulation...');
-    await runCommand('npm', ['run', 'build'], buildDir, simId);
+    try {
+      await runCommand('npm', ['run', 'build'], buildDir, simId);
+    } catch (primaryBuildError) {
+      await addBuildLog(simId, 'Primary build command failed. Trying a Vite fallback build...');
+      try {
+        await runCommand('npx', ['vite', 'build', '--base=./'], buildDir, simId);
+      } catch (fallbackError) {
+        throw new Error(`Build failed. Primary: ${primaryBuildError.message}. Fallback: ${fallbackError.message}`);
+      }
+    }
 
     const distDir = fs.existsSync(path.join(buildDir, 'dist')) 
       ? path.join(buildDir, 'dist') 
